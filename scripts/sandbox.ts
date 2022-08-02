@@ -5,7 +5,7 @@ import prompts from 'prompts';
 
 import { getOptionsOrPrompt } from './utils/options';
 import { executeCLIStep } from './utils/cli-step';
-import { exec } from '../code/lib/cli/src/repro-generators/scripts';
+import { configure, exec } from '../code/lib/cli/src/repro-generators/scripts';
 import { getInterpretedFile } from '../code/lib/core-common';
 import { ConfigFile, readConfig, writeConfig } from '../code/lib/csf-tools';
 import { babelParse } from '../code/lib/csf-tools/src/babelParse';
@@ -134,7 +134,7 @@ async function addPackageScripts({
   cwd: string;
   scripts: Record<string, string>;
 }) {
-  logger.info(`🔢 Adding package resolutions:`);
+  logger.info(`🔢 Adding package scripts:`);
   const packageJsonPath = path.join(cwd, 'package.json');
   const packageJson = await readJSON(packageJsonPath);
   packageJson.scripts = {
@@ -258,27 +258,41 @@ async function main() {
 
     await writeConfig(mainConfig);
 
+    await configure({ cwd, e2e: !link, pnp: false, noInstall: true, dryRun } as any);
+    await addPackageScripts({
+      cwd,
+      scripts: {
+        storybook:
+          'NODE_OPTIONS="--preserve-symlinks --preserve-symlinks-main" storybook dev -p 6006',
+        'build-storybook':
+          'NODE_OPTIONS="--preserve-symlinks --preserve-symlinks-main" storybook build',
+      },
+    });
     if (link) {
-      await exec('yarn set version berry', { cwd }, { dryRun });
-      await exec('yarn config set enableGlobalCache true', { cwd }, { dryRun });
-      await exec('yarn config set nodeLinker node-modules', { cwd }, { dryRun });
-
       await executeCLIStep(steps.link, {
         argument: cwd,
         cwd: codeDir,
         dryRun,
         optionValues: { local: true, start: false },
       });
+    } else {
+      await exec('yarn local-registry --publish', { cwd: codeDir }, { dryRun });
 
-      await addPackageScripts({
-        cwd,
-        scripts: {
-          storybook:
-            'NODE_OPTIONS="--preserve-symlinks --preserve-symlinks-main" storybook dev -p 6006',
-          'build-storybook':
-            'NODE_OPTIONS="--preserve-symlinks --preserve-symlinks-main" storybook build',
-        },
-      });
+      // NOTE: this is a background task and will run forever (TODO: sort out logging/exiting)
+      exec('CI=true yarn local-registry --open', { cwd: codeDir }, { dryRun });
+      await exec('yarn wait-on http://localhost:6000', { cwd: codeDir }, { dryRun });
+
+      // await new Promise((r) => setTimeout(r, 10000));
+
+      await exec(
+        'yarn install',
+        { cwd },
+        {
+          dryRun,
+          startMessage: `⬇️ Installing local dependencies`,
+          errorMessage: `🚨 Installing local dependencies failed`,
+        }
+      );
     }
   }
 

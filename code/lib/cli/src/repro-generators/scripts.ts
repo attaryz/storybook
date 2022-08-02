@@ -46,6 +46,10 @@ export interface Options extends Parameters {
   cwd?: string;
   e2e: boolean;
   pnp: boolean;
+  local?: boolean;
+  registry?: string;
+  noInstall?: boolean;
+  dryRun?: boolean;
 }
 
 export const exec = async (
@@ -90,8 +94,10 @@ export const exec = async (
   });
 };
 
-const addPackageResolutions = async ({ cwd }: Options) => {
+const addPackageResolutions = async ({ cwd, dryRun }: Options) => {
   logger.info(`🔢 Adding package resolutions:`);
+  if (dryRun) return;
+
   const packageJsonPath = path.join(cwd, 'package.json');
   const packageJson = await readJSON(packageJsonPath);
   packageJson.resolutions = storybookVersions;
@@ -118,7 +124,7 @@ const addLocalPackageResolutions = async ({ cwd }: Options) => {
   await writeJSON(packageJsonPath, packageJson, { spaces: 2 });
 };
 
-const installYarn2 = async ({ cwd, pnp, name }: Options) => {
+const installYarn2 = async ({ cwd, pnp, name, dryRun }: Options) => {
   const command = [
     `yarn set version berry`,
     `yarn config set enableGlobalCache true`,
@@ -137,11 +143,11 @@ const installYarn2 = async ({ cwd, pnp, name }: Options) => {
   await exec(
     command.join(' && '),
     { cwd },
-    { startMessage: `🧶 Installing Yarn 2`, errorMessage: `🚨 Installing Yarn 2 failed` }
+    { dryRun, startMessage: `🧶 Installing Yarn 2`, errorMessage: `🚨 Installing Yarn 2 failed` }
   );
 };
 
-const configureYarn2ForE2E = async ({ cwd }: Options) => {
+const configureYarn2ForE2E = async ({ cwd, dryRun }: Options) => {
   const command = [
     // ⚠️ Need to set registry because Yarn 2 is not using the conf of Yarn 1 (URL is hardcoded in CircleCI config.yml)
     `yarn config set npmScopes --json '{ "storybook": { "npmRegistryServer": "http://localhost:6000/" } }'`,
@@ -158,7 +164,7 @@ const configureYarn2ForE2E = async ({ cwd }: Options) => {
   await exec(
     command,
     { cwd },
-    { startMessage: `🎛 Configuring Yarn 2`, errorMessage: `🚨 Configuring Yarn 2 failed` }
+    { startMessage: `🎛 Configuring Yarn 2`, errorMessage: `🚨 Configuring Yarn 2 failed`, dryRun }
   );
 };
 
@@ -212,14 +218,14 @@ const initStorybook = async ({ cwd, autoDetect = true, name, e2e, pnp }: Options
   );
 };
 
-const addRequiredDeps = async ({ cwd, additionalDeps }: Options) => {
-  // Remove any lockfile generated without Yarn 2
-  shell.rm('-f', path.join(cwd, 'package-lock.json'), path.join(cwd, 'yarn.lock'));
+const addRequiredDeps = async ({ cwd, additionalDeps, noInstall, dryRun }: Options) => {
+  const hasAdditionalDeps = additionalDeps && additionalDeps.length > 0;
+  if (!hasAdditionalDeps && noInstall) return;
 
-  const command =
-    additionalDeps && additionalDeps.length > 0
-      ? `yarn add -D ${additionalDeps.join(' ')}`
-      : `yarn install`;
+  // Remove any lockfile generated without Yarn 2
+  if (!dryRun) shell.rm('-f', path.join(cwd, 'package-lock.json'), path.join(cwd, 'yarn.lock'));
+
+  const command = hasAdditionalDeps ? `yarn add -D ${additionalDeps.join(' ')}` : `yarn install`;
 
   await exec(
     command,
@@ -227,6 +233,7 @@ const addRequiredDeps = async ({ cwd, additionalDeps }: Options) => {
     {
       startMessage: `🌍 Adding needed deps & installing all deps`,
       errorMessage: `🚨 Dependencies installation failed`,
+      dryRun,
     }
   );
 };
@@ -287,6 +294,8 @@ export const createAndInit = async (
     cwd,
     e2e,
     pnp,
+    local,
+    registry,
     ...rest,
   };
 
@@ -296,21 +305,27 @@ export const createAndInit = async (
 
   await doTask(generate, { ...options, cwd: options.creationPath });
   await doTask(addAdditionalFiles, { ...options, cwd }, !!options.additionalFiles);
-  if (e2e) {
+
+  await configure(options);
+
+  await doTask(initStorybook, options);
+};
+
+export const configure = async (options: Options) => {
+  if (options.e2e) {
     await doTask(addPackageResolutions, options);
   }
-  if (local) {
+  if (options.local) {
     await doTask(addLocalPackageResolutions, options);
   }
   await doTask(installYarn2, options);
-  if (e2e) {
-    await doTask(configureYarn2ForE2E, options, e2e);
+  if (options.e2e) {
+    await doTask(configureYarn2ForE2E, options, options.e2e);
   }
   await doTask(addTypescript, options, !!options.typescript);
   await doTask(addRequiredDeps, options);
-  if (registry) {
-    await registryUrlNPM(registry);
-    await registryUrlYarn(registry);
+  if (options.registry) {
+    await registryUrlNPM(options.registry);
+    await registryUrlYarn(options.registry);
   }
-  await doTask(initStorybook, options);
 };
